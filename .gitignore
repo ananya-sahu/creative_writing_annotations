@@ -1,2 +1,3 @@
 gsheets_credentials.json
 gsheets_credentials.json
+.streamlit/secrets.toml
