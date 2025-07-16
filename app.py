@@ -23,9 +23,14 @@ def load_data():
 
 # === Google Sheets setup ===
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS = ServiceAccountCredentials.from_json_keyfile_name("gsheets_credentials.json", SCOPE)
+# Load credentials from Streamlit secrets
+gcp_creds = st.secrets["gcp"]
+# Create credentials from dict (no local file needed)
+CREDS = ServiceAccountCredentials.from_json_keyfile_dict(gcp_creds, SCOPE)
+# Authorize and open sheet
 CLIENT = gspread.authorize(CREDS)
-SHEET = CLIENT.open("creative_writing_annotations").sheet1  # <-- NEW sheet name
+SHEET = CLIENT.open("creative_writing_annotations").sheet1
+
 
 # === Deterministic prompt assignment ===
 def get_assigned_prompts(annotator_id, prompt_keys):
