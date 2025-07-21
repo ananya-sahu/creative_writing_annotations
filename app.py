@@ -77,10 +77,16 @@ def load_saved_annotations(annotator_id, session_id):
 
 # === Main App ===
 def main():
+    if "page" not in st.session_state:
+        st.session_state.page = 0
+    if "instructions_expanded" not in st.session_state:
+        st.session_state.instructions_expanded = True
+        
     st.title("Paragraph Annotation Task")
 
     # --- INSTRUCTIONS ---
-    with st.expander("📘 Welcome Instructions", expanded=True):
+    # with st.expander("📘 Welcome Instructions", expanded=True):
+    with st.expander("📘 Welcome Instructions", expanded=st.session_state.instructions_expanded):
         st.markdown("""
 ### Welcome to the Annotation Task!
 
@@ -154,6 +160,9 @@ Thank you!
     total_pages = len(all_prompts) + 1  # +1 for feedback page
     if "page" not in st.session_state:
         st.session_state.page = 0
+    
+    if "instructions_expanded" not in st.session_state:
+        st.session_state.instructions_expanded = True
 
     current_page = st.session_state.page
 
@@ -247,6 +256,7 @@ Thank you!
                     st.error("Duplicate ranks detected.")
                 else:
                     st.session_state.page += 1
+                    st.session_state.instructions_expanded = False
                     st.rerun()
 
     # === FEEDBACK PAGE ===
