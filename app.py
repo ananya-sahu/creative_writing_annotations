@@ -206,28 +206,43 @@ Thank you!
                     key=f"rating_{key[0]}_{key[1]}_{para_id}_{dim}"
                 )
             st.markdown("---")
+
         st.markdown("### Need to reference the paragraphs again?")
+        # Toggle for showing the prompt
+        if "show_prompt" not in st.session_state:
+            st.session_state.show_prompt = False
+        if st.button("Show Prompt" if not st.session_state.show_prompt else "Hide Prompt"):
+            st.session_state.show_prompt = not st.session_state.show_prompt
+            st.rerun()
+        if st.session_state.show_prompt:
+            st.info(f"**Prompt:**\n\n{prompt}")
+
+        # Toggle for showing all paragraphs
         if "show_all_paras" not in st.session_state:
             st.session_state.show_all_paras = False
         if st.button("Show All Paragraphs" if not st.session_state.show_all_paras else "Hide All Paragraphs"):
             st.session_state.show_all_paras = not st.session_state.show_all_paras
             st.rerun()
 
-        for i, para in enumerate(paras):
-            para_id = f"Paragraph {i+1}"
-            toggle_key = f"ref_show_{key[0]}_{key[1]}_{para_id}"
-            if toggle_key not in st.session_state:
-                st.session_state[toggle_key] = False
-
-            if st.session_state.show_all_paras:
+        if st.session_state.show_all_paras:
+            for i, para in enumerate(paras):
+                para_id = f"Paragraph {i+1}"
                 st.info(f"**{para_id}**\n\n{para}")
-            else:
+        else:
+            # Individual toggle buttons for each paragraph
+            for i, para in enumerate(paras):
+                para_id = f"Paragraph {i+1}"
+                toggle_key = f"ref_show_{key[0]}_{key[1]}_{para_id}"
+                if toggle_key not in st.session_state:
+                    st.session_state[toggle_key] = False
+
                 if st.button(f"{'Hide' if st.session_state[toggle_key] else 'Show'} {para_id}",
                             key=f"btn_{toggle_key}"):
                     st.session_state[toggle_key] = not st.session_state[toggle_key]
                     st.rerun()
                 if st.session_state[toggle_key]:
                     st.info(f"**{para_id}**\n\n{para}")
+
 
         # Rankings
         st.markdown("### Rank the paragraphs (1 = best, 4 = worst)")
