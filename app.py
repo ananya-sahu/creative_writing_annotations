@@ -21,6 +21,14 @@ PROMPTS_PER_ANNOTATOR = 2
 LOCAL_SAVE_DIR = os.path.join(tempfile.gettempdir(), "./saved_sessions")
 os.makedirs(LOCAL_SAVE_DIR, exist_ok=True)
 
+ADMIN_SECRET = "my_super_secret_key"# change this to something unique
+
+def is_admin():
+    try:
+        return st.query_params.get("admin") == ADMIN_SECRET
+    except Exception:
+        return False
+
 # === Local Save/Load Helpers ===
 def get_local_save_path(annotator_id, session_id):
     return f"{LOCAL_SAVE_DIR}/{annotator_id}_{session_id}.json"
@@ -67,7 +75,8 @@ def load_data():
 
 # === Google Sheets setup ===
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-gcp_creds = st.secrets["gcp"]
+# gcp_creds = st.secrets["gcp"]
+gcp_creds = st.secrets
 CREDS = ServiceAccountCredentials.from_json_keyfile_dict(gcp_creds, SCOPE)
 CLIENT = gspread.authorize(CREDS)
 SHEET = CLIENT.open("creative_writing_annotations").sheet1
@@ -107,6 +116,38 @@ def save_all_annotations(annotator_id, session_id, all_data):
 
 # === Main App ===
 def main():
+    if is_admin():
+        st.title("🛠 Admin Panel – Saved Sessions")
+        files = [f for f in os.listdir(LOCAL_SAVE_DIR) if f.endswith(".json")]
+
+        if not files:
+            st.info("No saved sessions found.")
+        else:
+            for f in files:
+                path = os.path.join(LOCAL_SAVE_DIR, f)
+                last_modified = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+
+                st.markdown(f"**{f}** – Last modified: {last_modified}")
+                
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    with open(path, "r") as fp:
+                        data = fp.read()
+                    st.download_button(
+                        label=f"⬇️ Download {f}",
+                        data=data,
+                        file_name=f,
+                        mime="application/json",
+                        key=f"download_{f}"
+                    )
+                with col2:
+                    if st.button(f"🗑️ Delete", key=f"delete_{f}"):
+                        os.remove(path)
+                        st.warning(f"Deleted {f}")
+                        st.rerun()  # Refresh the admin panel after deletion
+                st.markdown("---")
+        return  # ✅ Stops here so annotators never see annotation UI
+    
     if "page" not in st.session_state:
         st.session_state.page = 0
         # Auto-scroll if flagged (after Next/Previous rerun)
