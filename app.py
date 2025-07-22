@@ -116,6 +116,9 @@ def save_all_annotations(annotator_id, session_id, all_data):
 
 # === Main App ===
 def main():
+    params = st.experimental_get_query_params()
+    st.write("DEBUG - Query params:", params)
+
     if is_admin():
         st.title("🛠 Admin Panel – Saved Sessions")
         files = [f for f in os.listdir(LOCAL_SAVE_DIR) if f.endswith(".json")]
