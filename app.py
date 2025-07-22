@@ -116,8 +116,8 @@ def save_all_annotations(annotator_id, session_id, all_data):
 
 # === Main App ===
 def main():
-    params = st.query_params
-    st.write("DEBUG - Query params:", params)
+    # params = st.query_params
+    # st.write("DEBUG - Query params:", params)
 
     if is_admin():
         st.title("🛠 Admin Panel – Saved Sessions")
