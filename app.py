@@ -7,6 +7,7 @@ import uuid
 import datetime
 import time
 import os
+import random 
 
 # === CONFIG ===
 DIMENSIONS = [
@@ -73,13 +74,27 @@ def load_data():
         non_paras = json.load(f)
     return fic_paras, non_paras
 
-# === Google Sheets setup ===
+# # === Google Sheets setup ===
+# SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+# # gcp_creds = st.secrets["gcp"]
+# gcp_creds = st.secrets
+# CREDS = ServiceAccountCredentials.from_json_keyfile_dict(gcp_creds, SCOPE)
+# CLIENT = gspread.authorize(CREDS)
+# SHEET = CLIENT.open("creative_writing_annotations").sheet1
+
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-# gcp_creds = st.secrets["gcp"]
 gcp_creds = st.secrets
 CREDS = ServiceAccountCredentials.from_json_keyfile_dict(gcp_creds, SCOPE)
-CLIENT = gspread.authorize(CREDS)
-SHEET = CLIENT.open("creative_writing_annotations").sheet1
+
+SHEET = None  
+
+@st.cache_resource
+def get_sheet():
+    global SHEET
+    if SHEET is None:
+        client = gspread.authorize(CREDS)
+        SHEET = client.open("creative_writing_annotations").sheet1
+    return SHEET
 
 
 # === Deterministic prompt assignment ===
@@ -113,6 +128,62 @@ def get_assigned_prompts(annotator_id, prompt_keys):
 #     else:
 #         SHEET.append_row([annotator_id, session_id, json_data, timestamp])
 # === Save annotations to Google Sheets (optimized to prevent quota errors) with error checking ===
+# def save_all_annotations(annotator_id, session_id, all_data):
+#     serializable_data = {
+#         f"{k[0]}__{k[1]}": v for k, v in all_data.items() if isinstance(k, tuple)
+#     }
+#     if "feedback" in all_data:
+#         serializable_data["feedback"] = all_data["feedback"]
+
+#     json_data = json.dumps(serializable_data)
+#     timestamp = datetime.datetime.now().isoformat()
+
+#     # ✅ Use find() instead of get_all_values()
+#     row_index = None
+#     try:
+#         cell = SHEET.find(annotator_id)
+#         if cell:
+#             row_values = SHEET.row_values(cell.row)
+#             if len(row_values) > 1 and row_values[1] == session_id:
+#                 row_index = cell.row
+#     except Exception:
+#         row_index = None
+
+#     # ✅ Retry wrapper for 429 errors
+#     def retry_api_call(func, max_retries=5):
+#         import random, time
+#         for attempt in range(max_retries):
+#             try:
+#                 return func()
+#             except Exception as e:
+#                 if "429" in str(e):
+#                     wait_time = (2 ** attempt) + random.random()
+#                     time.sleep(wait_time)
+#                 else:
+#                     raise e
+#         raise Exception("Max retries exceeded")
+
+#     if row_index:
+#         retry_api_call(lambda: SHEET.update(
+#             f"A{row_index}:D{row_index}",
+#             [[annotator_id, session_id, json_data, timestamp]]
+#         ))
+#     else:
+#         retry_api_call(lambda: SHEET.append_row(
+#             [annotator_id, session_id, json_data, timestamp]
+#         ))
+def retry_api_call(func, max_retries=5):
+    for attempt in range(max_retries):
+        try:
+            return func()
+        except Exception as e:
+            if "429" in str(e) or "quota" in str(e).lower():
+                wait_time = (2 ** attempt) + random.random()
+                time.sleep(wait_time)
+            else:
+                raise e
+    raise Exception("Max retries exceeded")
+
 def save_all_annotations(annotator_id, session_id, all_data):
     serializable_data = {
         f"{k[0]}__{k[1]}": v for k, v in all_data.items() if isinstance(k, tuple)
@@ -123,40 +194,11 @@ def save_all_annotations(annotator_id, session_id, all_data):
     json_data = json.dumps(serializable_data)
     timestamp = datetime.datetime.now().isoformat()
 
-    # ✅ Use find() instead of get_all_values()
-    row_index = None
-    try:
-        cell = SHEET.find(annotator_id)
-        if cell:
-            row_values = SHEET.row_values(cell.row)
-            if len(row_values) > 1 and row_values[1] == session_id:
-                row_index = cell.row
-    except Exception:
-        row_index = None
+    sheet = get_sheet()
 
-    # ✅ Retry wrapper for 429 errors
-    def retry_api_call(func, max_retries=5):
-        import random, time
-        for attempt in range(max_retries):
-            try:
-                return func()
-            except Exception as e:
-                if "429" in str(e):
-                    wait_time = (2 ** attempt) + random.random()
-                    time.sleep(wait_time)
-                else:
-                    raise e
-        raise Exception("Max retries exceeded")
+    retry_api_call(lambda: sheet.append_row([annotator_id, session_id, json_data, timestamp]))
 
-    if row_index:
-        retry_api_call(lambda: SHEET.update(
-            f"A{row_index}:D{row_index}",
-            [[annotator_id, session_id, json_data, timestamp]]
-        ))
-    else:
-        retry_api_call(lambda: SHEET.append_row(
-            [annotator_id, session_id, json_data, timestamp]
-        ))
+
 
 
 
