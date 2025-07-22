@@ -25,7 +25,7 @@ ADMIN_SECRET = "my_super_secret_key"# change this to something unique
 
 def is_admin():
     try:
-        return st.query_params.get("secret")[0] == ADMIN_SECRET
+        return st.query_params.get("secret") == ADMIN_SECRET
     except Exception:
         return False
 
