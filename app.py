@@ -18,7 +18,7 @@ PROMPTS_PER_ANNOTATOR = 2
 # === LOCAL SAVE DIRECTORY ===
 # LOCAL_SAVE_DIR = "./saved_sessions"
 # os.makedirs(LOCAL_SAVE_DIR, exist_ok=True)
-LOCAL_SAVE_DIR = os.path.join(tempfile.gettempdir(), "saved_sessions")
+LOCAL_SAVE_DIR = os.path.join(tempfile.gettempdir(), "./saved_sessions")
 os.makedirs(LOCAL_SAVE_DIR, exist_ok=True)
 
 # === Local Save/Load Helpers ===
@@ -65,51 +65,9 @@ def load_data():
         non_paras = json.load(f)
     return fic_paras, non_paras
 
-def force_scroll_top():
-    js = '''
-    <script>
-        function scrollWhenReady() {
-            const selectors = [
-                '[data-testid="stAppViewContainer"]',
-                '.block-container',
-                '.main'
-            ];
-            let scrolled = false;
-
-            function tryScroll() {
-                selectors.forEach(sel => {
-                    const elements = document.querySelectorAll(sel);
-                    elements.forEach(el => {
-                        if (el) {
-                            el.scrollTop = 0;
-                            if (el.scrollTo) el.scrollTo(0, 0);
-                            scrolled = true;
-                        }
-                    });
-                });
-                if (!scrolled) {
-                    // Try again until container exists
-                    requestAnimationFrame(tryScroll);
-                }
-            }
-            tryScroll();
-        }
-        scrollWhenReady();
-    </script>
-    '''
-    temp = st.empty()
-    with temp:
-        st.components.v1.html(js, height=0)
-    temp.empty()
-
-
-
-
-
 # === Google Sheets setup ===
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-# gcp_creds = st.secrets["gcp"]
-gcp_creds = st.secrets
+gcp_creds = st.secrets["gcp"]
 CREDS = ServiceAccountCredentials.from_json_keyfile_dict(gcp_creds, SCOPE)
 CLIENT = gspread.authorize(CREDS)
 SHEET = CLIENT.open("creative_writing_annotations").sheet1
@@ -189,8 +147,7 @@ def main():
     page_changed = st.session_state.page != st.session_state.last_page
     if page_changed:
         st.session_state.last_page = st.session_state.page
-        # Force scroll to top when page changes
-        force_scroll_top()
+
     st.title("Paragraph Annotation Task")
 
     # === INSTRUCTIONS ===
@@ -228,9 +185,11 @@ You will complete **4 tasks** today. In each task, you will read **4 paragraphs*
 
 - Each paragraph must receive a **unique rank** — **no duplicate ranks are allowed**.
 
+- After ranking you will be asked to respond to 2 open ended questions on the reasoning behind why you chose the overall rankings. Please explain your answers in detail (2-3 sentences) 
+
 ---
 
-Once all tasks are complete, you will be asked to submit a feedback form about you reasoning and annotation process. Please answer each question attentively and explain your answers thoroughly. 
+Once all tasks are complete, you will be asked to submit a feedback form about your annotation process. Please answer attentively and explain your answers thoroughly. 
 
 **⚠️ Please try to complete the entire annotation session in one sitting to avoid data loss. Avoid refreshing or closing the browser until you have submitted all your responses.**
 
@@ -369,6 +328,37 @@ Thank you!
             if new_rank != rankings[para]:
                 rankings[para] = new_rank
                 save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
+        
+        # --- Feedback questions at end of each task ---
+        task_data = st.session_state["all_annotations"][key]
+
+        if "feedback" not in task_data:
+            task_data["feedback"] = {
+                "reasoning_features": "",
+                "other_factors": ""
+            }
+
+        fb = task_data["feedback"]
+
+        st.markdown("### Task Feedback")
+
+        new_reasoning = st.text_area(
+            "1. Which of the quality dimensions (if any) were most helpful or reliable when deciding your overall rankings?",
+            fb["reasoning_features"],
+            key=f"reasoning_{key[0]}_{key[1]}"
+        )
+        if new_reasoning != fb["reasoning_features"]:
+            fb["reasoning_features"] = new_reasoning
+            save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
+
+        new_factors = st.text_area(
+            "2. Were there any other factors, beyond the listed dimensions, that influenced your ranking decisions? If so please list them and explain how.",
+            fb["other_factors"],
+            key=f"factors_{key[0]}_{key[1]}"
+        )
+        if new_factors != fb["other_factors"]:
+            fb["other_factors"] = new_factors
+            save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
 
         col1, col2 = st.columns(2)
         with col1:
@@ -448,38 +438,31 @@ Thank you!
                 """, height=0)
 
 
-    # === FEEDBACK PAGE ===
+   # === FINAL FEEDBACK PAGE ===
     else:
         st.header("Final Feedback")
 
-        if "feedback" not in st.session_state["all_annotations"]:
-            st.session_state["all_annotations"]["feedback"] = {
-                "reasoning_features": "",
-                "other_factors": "",
-                "workflow_overall": ""
-            }
+        # Store final workflow as its own key, not inside "feedback"
+        if "annotator_workflow" not in st.session_state["all_annotations"]:
+            st.session_state["all_annotations"]["annotator_workflow"] = ""
 
-        fb = st.session_state["all_annotations"]["feedback"]
+        st.markdown("### 3. Briefly describe your workflow")
 
-        new_reasoning = st.text_area(
-            "1. Which quality dimensions were most helpful?",
-            fb["reasoning_features"]
+        st.markdown("""
+        *Some questions to consider (you do not need to answer each individually):*  
+        - In Task 2, how did you approach ranking the paragraphs?  
+        - Did you read all the paragraphs first before ranking, or evaluate them one by one?  
+        - Did you compare paragraphs side by side, or decide based on an overall impression?  
+        - Did you revisit and change any rankings after reading others?  
+        - What cues or reasoning were most important in helping you decide which paragraph was better?
+        """)
+
+        new_workflow = st.text_area(
+            "Your response:",
+            st.session_state["all_annotations"]["annotator_workflow"]
         )
-        if new_reasoning != fb["reasoning_features"]:
-            fb["reasoning_features"] = new_reasoning
-            save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
-
-        new_factors = st.text_area(
-            "2. Other factors beyond listed dimensions?",
-            fb["other_factors"]
-        )
-        if new_factors != fb["other_factors"]:
-            fb["other_factors"] = new_factors
-            save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
-
-        new_workflow = st.text_area("3. Briefly describe your workflow:", fb["workflow_overall"])
-        if new_workflow != fb["workflow_overall"]:
-            fb["workflow_overall"] = new_workflow
+        if new_workflow != st.session_state["all_annotations"]["annotator_workflow"]:
+            st.session_state["all_annotations"]["annotator_workflow"] = new_workflow
             save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
 
         if st.button("Submit All Annotations"):
@@ -505,6 +488,7 @@ Thank you!
                     st.caption("🗑️ Local backup deleted after submission.")
                 except FileNotFoundError:
                     pass
+
 
         # Navigation for feedback page
         col1, col2 = st.columns(2)
