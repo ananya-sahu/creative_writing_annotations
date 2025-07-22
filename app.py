@@ -1,9 +1,12 @@
 import streamlit as st
 import json
+import tempfile
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import uuid
 import datetime
+import time
+import os
 
 # === CONFIG ===
 DIMENSIONS = [
@@ -11,6 +14,47 @@ DIMENSIONS = [
     "Semantic Density", "Not a Summary", "Engagement", "Overall"
 ]
 PROMPTS_PER_ANNOTATOR = 2
+
+# === LOCAL SAVE DIRECTORY ===
+# LOCAL_SAVE_DIR = "./saved_sessions"
+# os.makedirs(LOCAL_SAVE_DIR, exist_ok=True)
+LOCAL_SAVE_DIR = os.path.join(tempfile.gettempdir(), "saved_sessions")
+os.makedirs(LOCAL_SAVE_DIR, exist_ok=True)
+
+# === Local Save/Load Helpers ===
+def get_local_save_path(annotator_id, session_id):
+    return f"{LOCAL_SAVE_DIR}/{annotator_id}_{session_id}.json"
+
+
+def save_to_local_file(annotator_id, session_id, all_data):
+    # Convert tuple keys to strings
+    serializable_data = {
+        (f"{k[0]}__{k[1]}" if isinstance(k, tuple) else k): v
+        for k, v in all_data.items()
+    }
+    serializable_data["_autosave_timestamp"] = datetime.datetime.now().isoformat()
+
+    path = get_local_save_path(annotator_id, session_id)
+    with open(path, "w") as f:
+        json.dump(serializable_data, f, indent=2)
+
+
+
+def load_from_local_file(annotator_id, session_id):
+    path = get_local_save_path(annotator_id, session_id)
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            loaded = json.load(f)
+        restored = {
+            tuple(k.split("__", 1)): v
+            for k, v in loaded.items()
+            if k not in ["feedback", "_autosave_timestamp"]
+        }
+        if "feedback" in loaded:
+            restored["feedback"] = loaded["feedback"]
+        restored["_autosave_timestamp"] = loaded.get("_autosave_timestamp", "")
+        return restored
+    return None
 
 # === Load JSON paragraph data ===
 @st.cache_data
@@ -21,13 +65,55 @@ def load_data():
         non_paras = json.load(f)
     return fic_paras, non_paras
 
+def force_scroll_top():
+    js = '''
+    <script>
+        function scrollWhenReady() {
+            const selectors = [
+                '[data-testid="stAppViewContainer"]',
+                '.block-container',
+                '.main'
+            ];
+            let scrolled = false;
+
+            function tryScroll() {
+                selectors.forEach(sel => {
+                    const elements = document.querySelectorAll(sel);
+                    elements.forEach(el => {
+                        if (el) {
+                            el.scrollTop = 0;
+                            if (el.scrollTo) el.scrollTo(0, 0);
+                            scrolled = true;
+                        }
+                    });
+                });
+                if (!scrolled) {
+                    // Try again until container exists
+                    requestAnimationFrame(tryScroll);
+                }
+            }
+            tryScroll();
+        }
+        scrollWhenReady();
+    </script>
+    '''
+    temp = st.empty()
+    with temp:
+        st.components.v1.html(js, height=0)
+    temp.empty()
+
+
+
+
+
 # === Google Sheets setup ===
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+# gcp_creds = st.secrets["gcp"]
 gcp_creds = st.secrets
-# gcp_creds = st.secrets["gcp"] #for local testing
 CREDS = ServiceAccountCredentials.from_json_keyfile_dict(gcp_creds, SCOPE)
 CLIENT = gspread.authorize(CREDS)
 SHEET = CLIENT.open("creative_writing_annotations").sheet1
+
 
 # === Deterministic prompt assignment ===
 def get_assigned_prompts(annotator_id, prompt_keys):
@@ -35,12 +121,12 @@ def get_assigned_prompts(annotator_id, prompt_keys):
     start = (id_int - 1) * PROMPTS_PER_ANNOTATOR
     return prompt_keys[start: start + PROMPTS_PER_ANNOTATOR]
 
-# === Save annotations (overwrite if same session_id exists) ===
+
+# === Save annotations to Google Sheets ===
 def save_all_annotations(annotator_id, session_id, all_data):
     serializable_data = {
         f"{k[0]}__{k[1]}": v for k, v in all_data.items() if isinstance(k, tuple)
     }
-    # Save feedback as its own key
     if "feedback" in all_data:
         serializable_data["feedback"] = all_data["feedback"]
 
@@ -55,37 +141,59 @@ def save_all_annotations(annotator_id, session_id, all_data):
             break
 
     if row_index:
-        SHEET.update(f"A{row_index}:D{row_index}", [[annotator_id, session_id, json_data, timestamp]])
+        SHEET.update(f"A{row_index}:D{row_index}",
+                     [[annotator_id, session_id, json_data, timestamp]])
     else:
         SHEET.append_row([annotator_id, session_id, json_data, timestamp])
 
-# === Load annotations ===
-def load_saved_annotations(annotator_id, session_id):
-    records = SHEET.get_all_records()
-    for rec in records:
-        if rec["annotator_id"] == annotator_id and rec["session_id"] == session_id:
-            try:
-                loaded = json.loads(rec["full_json"])
-                restored = {tuple(k.split("__", 1)): v for k, v in loaded.items() if k != "feedback"}
-                if "feedback" in loaded:
-                    restored["feedback"] = loaded["feedback"]
-                return restored
-            except Exception as e:
-                st.error(f"Failed to load saved annotations: {e}")
-                return None
-    return None
 
 # === Main App ===
 def main():
     if "page" not in st.session_state:
         st.session_state.page = 0
+        # Auto-scroll if flagged (after Next/Previous rerun)
+    if st.session_state.get("scroll_pending", False):
+        st.session_state["scroll_pending"] = False  # Reset flag
+        st.components.v1.html("""
+        <script>
+        const selectors = [
+            '[data-testid="stVerticalBlock"]',
+            '[data-testid="stAppViewContainer"]',
+            'section.main',
+            '.block-container'
+        ];
+        function scrollNow() {
+            selectors.forEach(sel => {
+                const el = window.parent.document.querySelector(sel);
+                if (el) {
+                    el.scrollTop = 0;
+                    if (el.scrollTo) el.scrollTo({top:0, behavior:'instant'});
+                }
+            });
+            window.scrollTo(0,0);
+            window.parent.scrollTo(0,0);
+            const header = window.parent.document.querySelector('h1');
+            if (header && header.scrollIntoView) header.scrollIntoView({behavior:'instant', block:'start'});
+        }
+        [50,150,300].forEach(ms => setTimeout(scrollNow, ms));
+        </script>
+        """, height=0)
+
     if "instructions_expanded" not in st.session_state:
         st.session_state.instructions_expanded = True
-        
+
+    # Check if page changed and scroll to top BEFORE rendering content
+    if "last_page" not in st.session_state:
+        st.session_state.last_page = st.session_state.page
+    
+    page_changed = st.session_state.page != st.session_state.last_page
+    if page_changed:
+        st.session_state.last_page = st.session_state.page
+        # Force scroll to top when page changes
+        force_scroll_top()
     st.title("Paragraph Annotation Task")
 
-    # --- INSTRUCTIONS ---
-    # with st.expander("📘 Welcome Instructions", expanded=True):
+    # === INSTRUCTIONS ===
     with st.expander("📘 Welcome Instructions", expanded=st.session_state.instructions_expanded):
         st.markdown("""
 ### Welcome to the Annotation Task!
@@ -101,19 +209,19 @@ You will complete **4 tasks** today. In each task, you will read **4 paragraphs*
 #### **Quality Dimensions**
 - **Originality** – How inventive or creative the ideas are (not generic or overly predictable).
 - **Elaboration** – Depth, detail, and completeness of narrative.
-- **Clarity** – How well the author’s intentions are conveyed (clear language, no confusing phrasing).
+- **Clarity** – How well the author's intentions are conveyed (clear language, no confusing phrasing).
 - **Coherence** – How logically the ideas flow (smooth transitions, consistent logic).
 - **Semantic Density** – Every word/phrase contributes meaningfully (no filler).
 - **Not a Summary** – Whether the paragraph is a full narrative rather than a summary.
 - **Engagement** – How interesting or compelling the paragraph is to read.
-- **Overall Quality** – Your overall impression of the paragraph’s quality and effectiveness.
+- **Overall Quality** – Your overall impression of the paragraph's quality and effectiveness.
 
 ---
 
 #### **Important Guidelines**
 - Always evaluate the paragraph **in relation to the prompt**.  
-  If the prompt itself seems uninteresting, focus on **how well the paragraph responds to it** rather than the topic’s inherent appeal.
-  For instance, consider the prompt: “What unique cultural and culinary experiences does Montreal offer to visitors exploring its diverse neighborhoods?” The topic (culture in Montreal) may not be inherently exciting, but your evaluation should not penalize the paragraph for that. Instead, focus on how well the writing responds to the prompt and whether it is engaging to read given the prompt’s context.
+  If the prompt itself seems uninteresting, focus on **how well the paragraph responds to it** rather than the topic's inherent appeal.
+  For instance, consider the prompt: "What unique cultural and culinary experiences does Montreal offer to visitors exploring its diverse neighborhoods?" The topic (culture in Montreal) may not be inherently exciting, but your evaluation should not penalize the paragraph for that. Instead, focus on how well the writing responds to the prompt and whether it is engaging to read given the prompt's context.
 
 - At the **end of each task**, you will **rank the 4 paragraphs** in order of preference:  
   **1 = Best**, **4 = Worst**
@@ -146,37 +254,38 @@ Thank you!
         st.rerun()
 
     st.markdown(f"**Annotator ID:** {annotator_id}")
-    st.markdown(f"**Session ID:** {session_id} (auto-saved)")
+    st.markdown(f"**Session ID:** {session_id} (auto-saved locally)")
+
+    # Store in session_state for easy access
+    st.session_state.annotator_id = annotator_id
+    st.session_state.session_id = session_id
 
     fic_paras, non_paras = load_data()
     fiction_keys = list(fic_paras.keys())
     nonfiction_keys = list(non_paras.keys())
-
     assigned_fic = get_assigned_prompts(annotator_id, fiction_keys)
     assigned_nonfic = get_assigned_prompts(annotator_id, nonfiction_keys)
     all_prompts = [("fiction", p) for p in assigned_fic] + [("nonfiction", p) for p in assigned_nonfic]
 
-    # Track pages including extra feedback page
     total_pages = len(all_prompts) + 1  # +1 for feedback page
-    if "page" not in st.session_state:
-        st.session_state.page = 0
-    
-    if "instructions_expanded" not in st.session_state:
-        st.session_state.instructions_expanded = True
-
     current_page = st.session_state.page
 
-    # Initialize annotations storage
+    # === Load saved progress if not loaded yet ===
     if "all_annotations" not in st.session_state:
-        st.session_state["all_annotations"] = {}
+        previous = load_from_local_file(annotator_id, session_id)
+        if previous:
+            st.session_state["all_annotations"] = previous
+            st.info(f"✅ Resumed from last auto-save at {previous.get('_autosave_timestamp', 'unknown')}")
+        else:
+            st.session_state["all_annotations"] = {}
 
     # === TASK PAGES ===
     if current_page < len(all_prompts):
         mode, prompt = all_prompts[current_page]
         paras_dict = fic_paras[prompt] if mode == "fiction" else non_paras[prompt]
         paras = list(paras_dict.values())
-
         key = (mode, prompt)
+
         if key not in st.session_state["all_annotations"]:
             st.session_state["all_annotations"][key] = {
                 "ranking": {f"Paragraph {i+1}": None for i in range(4)},
@@ -198,15 +307,18 @@ Thank you!
 
             for dim in DIMENSIONS:
                 stored_rating = ratings[para_id].get(dim, 1)
-                ratings[para_id][dim] = st.radio(
+                new_rating = st.radio(
                     dim,
                     [1, 2, 3, 4],
                     index=stored_rating - 1,
                     horizontal=True,
                     key=f"rating_{key[0]}_{key[1]}_{para_id}_{dim}"
                 )
+                if new_rating != ratings[para_id][dim]:
+                    ratings[para_id][dim] = new_rating
+                    save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
             st.markdown("---")
-
+        
         st.markdown("### Need to reference the paragraphs again?")
         # Toggle for showing the prompt
         if "show_prompt" not in st.session_state:
@@ -243,24 +355,33 @@ Thank you!
                 if st.session_state[toggle_key]:
                     st.info(f"**{para_id}**\n\n{para}")
 
-
         # Rankings
         st.markdown("### Rank the paragraphs (1 = best, 4 = worst)")
         rankings = st.session_state["all_annotations"][key]["ranking"]
         for para in rankings:
             stored_rank = rankings[para]
-            rankings[para] = st.selectbox(
+            new_rank = st.selectbox(
                 f"Rank for {para}:",
                 [1, 2, 3, 4],
                 index=(stored_rank - 1) if stored_rank in [1, 2, 3, 4] else 0,
                 key=f"rank_{key[0]}_{key[1]}_{para}"
             )
+            if new_rank != rankings[para]:
+                rankings[para] = new_rank
+                save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
 
-        # Navigation
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Previous") and current_page > 0:
                 st.session_state.page -= 1
+                # Force page refresh with query parameter to reset scroll
+                st.session_state["scroll_pending"] = True
+                st.query_params.update(
+                    annotator=annotator_id, 
+                    session=session_id,
+                    _scroll_reset=str(datetime.datetime.now().timestamp())
+                )
+                
                 st.rerun()
         with col2:
             if st.button("Next"):
@@ -272,12 +393,64 @@ Thank you!
                 else:
                     st.session_state.page += 1
                     st.session_state.instructions_expanded = False
+                    # Force page refresh with query parameter to reset scroll
+                    st.session_state["scroll_pending"] = True
+                    st.query_params.update(
+                        annotator=annotator_id, 
+                        session=session_id,
+                        _scroll_reset=str(datetime.datetime.now().timestamp())
+                    )
                     st.rerun()
+                    st.components.v1.html("""
+                <script>
+                const selectors = [
+                    '[data-testid="stVerticalBlock"]',
+                    '[data-testid="stAppViewContainer"]',
+                    'section.main',
+                    '.block-container'
+                ];
+                selectors.forEach(sel => {
+                    const el = window.parent.document.querySelector(sel);
+                    if (el) {
+                        el.scrollTop = 0;
+                        if (el.scrollTo) el.scrollTo({top:0, behavior:'instant'});
+                    }
+                });
+                window.scrollTo(0,0);
+                window.parent.scrollTo(0,0);
+                const header = window.parent.document.querySelector('h1');
+                if (header && header.scrollIntoView) header.scrollIntoView({behavior:'instant', block:'start'});
+                </script>
+                """, height=0)
+        
+        # Back to Top button (appears below navigation)
+            if st.button("⬆️ Back to Top"):
+                st.components.v1.html("""
+                <script>
+                const selectors = [
+                    '[data-testid="stVerticalBlock"]',
+                    '[data-testid="stAppViewContainer"]',
+                    'section.main',
+                    '.block-container'
+                ];
+                selectors.forEach(sel => {
+                    const el = window.parent.document.querySelector(sel);
+                    if (el) {
+                        el.scrollTop = 0;
+                        if (el.scrollTo) el.scrollTo({top:0, behavior:'instant'});
+                    }
+                });
+                window.scrollTo(0,0);
+                window.parent.scrollTo(0,0);
+                const header = window.parent.document.querySelector('h1');
+                if (header && header.scrollIntoView) header.scrollIntoView({behavior:'instant', block:'start'});
+                </script>
+                """, height=0)
+
 
     # === FEEDBACK PAGE ===
     else:
         st.header("Final Feedback")
-        st.markdown("Please answer the following questions about your reasoning and workflow:")
 
         if "feedback" not in st.session_state["all_annotations"]:
             st.session_state["all_annotations"]["feedback"] = {
@@ -288,33 +461,26 @@ Thank you!
 
         fb = st.session_state["all_annotations"]["feedback"]
 
-        # 1. Reasoning for Overall Rankings
-        fb["reasoning_features"] = st.text_area(
-            "1. Which of the quality dimensions (if any) were most helpful or reliable when deciding your overall rankings?",
+        new_reasoning = st.text_area(
+            "1. Which quality dimensions were most helpful?",
             fb["reasoning_features"]
         )
+        if new_reasoning != fb["reasoning_features"]:
+            fb["reasoning_features"] = new_reasoning
+            save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
 
-        # 2. Other Factors
-        fb["other_factors"] = st.text_area(
-            "2. Were there any other factors, beyond the listed quality dimensions, that influenced your ranking decisions? If so please explain them.",
+        new_factors = st.text_area(
+            "2. Other factors beyond listed dimensions?",
             fb["other_factors"]
         )
+        if new_factors != fb["other_factors"]:
+            fb["other_factors"] = new_factors
+            save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
 
-        # 3. Annotator Workflow (one overall answer, with guidance shown below)
-        st.markdown("### 3. Please briefly describe your annotations workflow.")
-        st.markdown("""
-        *Some questions to consider (you do not need to answer each individually):*  
-        - In Task 2, how did you approach ranking the paragraphs?  
-        - Did you read all the paragraphs first before ranking, or evaluate them one by one?  
-        - Did you compare paragraphs side by side, or decide based on an overall impression?  
-        - Did you revisit and change any rankings after reading others?  
-        - What cues or reasoning were most important in helping you decide which paragraph was better?
-        """)
-
-        fb["workflow_overall"] = st.text_area(
-            "Your overall workflow description:",
-            fb["workflow_overall"]
-        )
+        new_workflow = st.text_area("3. Briefly describe your workflow:", fb["workflow_overall"])
+        if new_workflow != fb["workflow_overall"]:
+            fb["workflow_overall"] = new_workflow
+            save_to_local_file(annotator_id, session_id, st.session_state["all_annotations"])
 
         if st.button("Submit All Annotations"):
             incomplete = False
@@ -333,11 +499,29 @@ Thank you!
                 st.error("Duplicate ranks detected.")
             else:
                 save_all_annotations(annotator_id, session_id, st.session_state["all_annotations"])
-                st.success("✅ All annotations (including feedback) saved to Google Sheets!")
+                st.success("✅ All annotations saved to Google Sheets!")
+                try:
+                    os.remove(get_local_save_path(annotator_id, session_id))
+                    st.caption("🗑️ Local backup deleted after submission.")
+                except FileNotFoundError:
+                    pass
+
+        # Navigation for feedback page
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Back to Last Task", key="feedback_back") and current_page > 0:
+                st.session_state.page = len(all_prompts) - 1
+                st.rerun()
+
+    # Show autosave timestamp
+    ts = st.session_state["all_annotations"].get("_autosave_timestamp", "")
+    if ts:
+        st.caption(f"💾 Auto-saved locally at: {ts}")
 
 
 if __name__ == "__main__":
     main()
+
 
 
 
