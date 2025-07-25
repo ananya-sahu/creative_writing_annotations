@@ -190,6 +190,9 @@ def save_all_annotations(annotator_id, session_id, all_data):
     }
     if "feedback" in all_data:
         serializable_data["feedback"] = all_data["feedback"]
+    
+    if "annotator_workflow" in all_data:
+        serializable_data["annotator_workflow"] = all_data["annotator_workflow"]
 
     json_data = json.dumps(serializable_data)
     timestamp = datetime.datetime.now().isoformat()
